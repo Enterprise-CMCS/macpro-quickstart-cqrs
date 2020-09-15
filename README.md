@@ -1,4 +1,4 @@
-# cms-bigmac [![latest release](https://img.shields.io/github/release/cmsgov/cms-bigmac.svg)](https://github.com/cmsgov/cms-bigmac/releases/latest)
+# macpro-quickstart-cqrs [![latest release](https://img.shields.io/github/release/cmsgov/macpro-quickstart-cqrs.svg)](https://github.com/cmsgov/macpro-quickstart-cqrs/releases/latest)
 
 A serverless form submission application built and deployed to AWS with the Serverless Application Framework.
 
@@ -9,7 +9,7 @@ A serverless form submission application built and deployed to AWS with the Serv
 
 ## Usage
 
-See master build [here](https://circleci.west.cms.gov/gh/CMSgov/workflows/cms-bigmac/tree/master)  (Be advised:  This is currently on a CircleCI behind a VPN and EUA)
+See master build [here](https://circleci.west.cms.gov/gh/CMSgov/workflows/macpro-quickstart-cqrs/tree/master)  (Be advised:  This is currently on a CircleCI behind a VPN and EUA)
 
 
 To get going with CircleCI, see the comments at the top of [.circleci/config.yml](.circleci/config.yml)
