@@ -4,7 +4,9 @@ var ses = new aws.SES({region: 'us-east-1'});
 
 exports.handler = function(event, context, callback) {
     console.log('Received event:', JSON.stringify(event, null, 2));
-    event.Records.forEach(function(record) {
+    var buff = Buffer.from(event.records['amendments-0'][0].value, 'base64');
+    var decodedEvent = JSON.parse(buff.toString('utf-8'));
+    decodedEvent.Records.forEach(function(record) {
       var params = (function(eventName) {
         switch(eventName) {
           case 'INSERT':

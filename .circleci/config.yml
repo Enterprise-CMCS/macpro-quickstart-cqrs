@@ -27,6 +27,12 @@
 #   - master_ROUTE_53_HOSTED_ZONE_ID: The hosted zone ID backing the master_ROUTE_53_DOMAIN_NAME; required if specifying master_ROUTE_53_DOMAIN_NAME  ex:  ASDFUWEIVNAQWE
 #   - master_CLOUDFRONT_DOMAIN_NAME: The domain name that should be applied to Cloudfront as an alias.  If you specified master_ROUTE_53_DOMAIN_NAME, these should match.  ex:  aps.cl-demo.com
 #   - master_CLOUDFRONT_CERTIFICATE_ARN: The arn of the certificate in ACM that is valid for master_CLOUDFRONT_DOMAIN_NAME.
+#
+# The following are new for bigmac, and must be set.
+#   - VPC_ID:  The id of the vpc into which MSK should be launched
+#   - PRIVATE_SUBNET_ID_1: The id of a private subnet into which MSK should be launched.  MSK needs 3.
+#   - PRIVATE_SUBNET_ID_2: The id of a private subnet into which MSK should be launched.  MSK needs 3.
+#   - PRIVATE_SUBNET_ID_3: The id of a private subnet into which MSK should be launched.  MSK needs 3.
 # ------------------------------------------------------------------------------
 
 version: 2.0
@@ -88,7 +94,7 @@ jobs:
       - checkout
       - restore_cache:
           keys:
-            - npm-tools-cache3-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
+            - npm-tools-cache4-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
       - run:
           name: install tools
           command: |
@@ -99,7 +105,7 @@ jobs:
             popd
             echo "export PATH=$(pwd)/.circleci/node_modules/.bin:\$PATH" >> $BASH_ENV
       - save_cache:
-          key: npm-tools-cache3-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
+          key: npm-tools-cache4-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
           paths:
             - ./.circleci/node_modules
       - run:
@@ -107,7 +113,7 @@ jobs:
           command: find . -not -path ./.circleci/package-lock.json -name package-lock.json | xargs cat > combined-package-lock.txt
       - restore_cache:
           keys:
-            - npm-cache3-{{ arch }}-{{ .Branch }}-{{ checksum "combined-package-lock.txt" }}
+            - npm-cache4-{{ arch }}-{{ .Branch }}-{{ checksum "combined-package-lock.txt" }}
       - run:
           name: set environment for deploy
           command: |
@@ -132,14 +138,16 @@ jobs:
             cd services
             ./output.sh ui CloudFrontEndpointUrl $STAGE_PREFIX$CIRCLE_BRANCH
       - save_cache:
-          key: npm-cache3-{{ arch }}-{{ .Branch }}-{{ checksum "combined-package-lock.txt" }}
+          key: npm-cache4-{{ arch }}-{{ .Branch }}-{{ checksum "combined-package-lock.txt" }}
           paths:
+            - services/bigmac-config/node_modules
+            - services/bigmac/node_modules
+            - services/bigmac-mgmt/node_modules
             - services/database/node_modules
             - services/uploads/node_modules
             - services/app-api/node_modules
             - services/elasticsearch-auth/node_modules
             - services/elasticsearch/node_modules
-            - services/elasticsearch-config/node_modules
             - services/stream-functions/node_modules
             - services/ui-auth/node_modules
             - services/ui/node_modules
@@ -154,7 +162,7 @@ jobs:
       - checkout
       - restore_cache:
           keys:
-            - npm-tools-cache3-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
+            - npm-tools-cache4-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
       - run:
           name: install tools
           command: |
@@ -165,7 +173,7 @@ jobs:
             popd
             echo "export PATH=$(pwd)/.circleci/node_modules/.bin:\$PATH" >> $BASH_ENV
       - save_cache:
-          key: npm-tools-cache3-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
+          key: npm-tools-cache4-{{ arch }}-{{ .Branch }}-{{ checksum "./.circleci/package-lock.json" }}
           paths:
             - ./.circleci/node_modules
       - run: ./.circleci/ctkey.sh

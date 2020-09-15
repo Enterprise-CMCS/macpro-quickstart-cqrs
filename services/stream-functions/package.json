@@ -3,11 +3,10 @@
   "description": "",
   "version": "1.0.0",
   "dependencies": {
-    "dynamo-to-elasticsearch-nodejs": "^1.0.5",
-    "dynamodb-stream-elasticsearch": "^2.11.1"
+    "kafka-node": "^5.0.0"
   },
   "devDependencies": {
-    "serverless-bundle": "^3.0.0",
+    "serverless-bundle": "^3.1.0",
     "serverless-dotenv-plugin": "^3.0.0"
   }
 }

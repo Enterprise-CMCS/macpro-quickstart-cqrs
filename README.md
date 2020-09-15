@@ -1,4 +1,4 @@
-# macpro-quickstart-serverless [![latest release](https://img.shields.io/github/release/cmsgov/macpro-quickstart-serverless.svg)](https://github.com/cmsgov/macpro-quickstart-serverless/releases/latest)
+# cms-bigmac [![latest release](https://img.shields.io/github/release/cmsgov/cms-bigmac.svg)](https://github.com/cmsgov/cms-bigmac/releases/latest)
 
 A serverless form submission application built and deployed to AWS with the Serverless Application Framework.
 
@@ -9,7 +9,7 @@ A serverless form submission application built and deployed to AWS with the Serv
 
 ## Usage
 
-See master build [here](https://circleci.west.cms.gov/gh/CMSgov/workflows/macpro-quickstart-serverless/tree/master)  (Be advised:  This is currently on a CircleCI behind a VPN and EUA)
+See master build [here](https://circleci.west.cms.gov/gh/CMSgov/workflows/cms-bigmac/tree/master)  (Be advised:  This is currently on a CircleCI behind a VPN and EUA)
 
 
 To get going with CircleCI, see the comments at the top of [.circleci/config.yml](.circleci/config.yml)
@@ -69,10 +69,14 @@ work worldwide through the CC0 1.0 Universal public domain dedication.
 
 ### Contributors
 
-This project made possible by the [Serverless Stack](https://serverless-stack.com/) and its authors/contributors.  The extremely detailed tutorial, code examples, and serverless pattern is where this project started.  I can't recommend this resource enough.
+The focus for this project is the Kafka streaming platform and how applications can plug into it.  For details on the rest of the application and its services, see the upstream [macpro-quickstart-serverless](https://github.com/CMSgov/macpro-quickstart-serverless).
 
-| [![Mike Dial][dial_avatar]][dial_homepage]<br/>[Mike Dial][dial_homepage] |
-|---|
+| [![Mike Dial][dial_avatar]][dial_homepage]<br/>[Mike Dial][dial_homepage] | [![Doug White][white_avatar]][white_homepage]<br/>[Doug White][white_homepage] | [![Berry Davenport][davenport_avatar]][davenport_homepage]<br/>[Berry Davenport][davenport_homepage] |
+|---|---|---|
 
   [dial_homepage]: https://github.com/mdial89f
   [dial_avatar]: https://avatars.githubusercontent.com/mdial89f?size=150
+  [white_homepage]: https://github.com/dwhitecl
+  [white_avatar]: https://avatars.githubusercontent.com/dwhitecl?size=150
+  [davenport_homepage]: https://github.com/berryd
+  [davenport_avatar]: https://avatars.githubusercontent.com/berryd?size=150

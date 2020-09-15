@@ -5,6 +5,9 @@ set -e
 stage=${1:-dev}
 
 services=(
+  'bigmac-config'
+  'bigmac'
+  'bigmac-mgmt'
   'database'
   'uploads'
   'app-api'

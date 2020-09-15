@@ -13,6 +13,9 @@ aws s3 rm s3://$uploads_bucket_name --recursive
 popd
 
 services=(
+  'bigmac-config'
+  'bigmac'
+  'bigmac-mgmt'
   'database'
   'uploads'
   'app-api'

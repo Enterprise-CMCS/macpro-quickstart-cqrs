@@ -15,6 +15,13 @@ custom:
   elasticSearchDomainArn: ${cf:elasticsearch-${self:custom.stage}.ElasticSearchDomainArn}
   emailSource: ${opt:emailSource, env:SES_SOURCE_EMAIL_ADDRESS, "admin@example.com"}
   reviewerEmail: ${opt:reviewTeamEmail, env:SES_REVIEW_TEAM_EMAIL_ADDRESS, "reviewteam@example.com"}
+  clusterArn: ${ssm:/bigmac-${self:custom.stage}/clusterArn}
+  bootstrapBrokerStringTls: ${ssm:/bigmac-${self:custom.stage}/bootstrapBrokerStringTls}
+  vpcId: ${env:VPC_ID}
+  subnets:
+    - ${env:PRIVATE_SUBNET_ID_1}
+    - ${env:PRIVATE_SUBNET_ID_2}
+    - ${env:PRIVATE_SUBNET_ID_3}
   iamPath: ${env:IAM_PATH, "/"}
 
 provider:
@@ -24,37 +31,39 @@ provider:
   stage: dev
 
 functions:
-  elasticsearchIndexer:
-    handler: handlers/elasticsearchIndexer.handler
+  sourceDynamoToMsk:
+    handler: handlers/sourceDynamoToMsk.handler
     events:
       - stream:
           arn: ${self:custom.tableStreamArn}
           startingPosition: LATEST
           maximumRetryAttempts: 2
+    role: LamdaSourceDynamoToMskRole
+    environment:
+      BOOTSTRAP_BROKER_STRING_TLS: ${self:custom.bootstrapBrokerStringTls}
+    maximumRetryAttempts: 2
+    vpc:
+      securityGroupIds:
+        - Ref: LambdaSecurityGroup
+      subnetIds: ${self:custom.subnets}
+  elasticsearchIndexer:
+    handler: handlers/indexer.handler
     role: LambdaElasticSearchIndexerRole
     environment:
-      ES_ENDPOINT_URL: https://${self:custom.elasticSearchDomainEndpoint}
+      ES_ENDPOINT: ${self:custom.elasticSearchDomainEndpoint}
       INDEX: amendments
       TYPE: json
+      clusterArn: ${self:custom.clusterArn}
+      bootstrapBrokerStringTls: ${self:custom.bootstrapBrokerStringTls}
     maximumRetryAttempts: 2
   emailSubmitter:
     handler: handlers/emailSubmitter.handler
-    events:
-      - stream:
-          arn: ${self:custom.tableStreamArn}
-          startingPosition: LATEST
-          maximumRetryAttempts: 2
     role: LambdaEmailerRole
     environment:
       emailSource: ${self:custom.emailSource}
     maximumRetryAttempts: 2
   emailReviewer:
     handler: handlers/emailReviewer.handler
-    events:
-      - stream:
-          arn: ${self:custom.tableStreamArn}
-          startingPosition: LATEST
-          maximumRetryAttempts: 2
     role: LambdaEmailerRole
     environment:
       emailSource: ${self:custom.emailSource}
@@ -69,7 +78,12 @@ resources:
           - ""
           - ${env:IAM_PERMISSIONS_BOUNDARY_POLICY, ""}
   Resources:
-    LambdaElasticSearchIndexerRole: # Why isn't this with the function as an iamRoleStatements?  https://github.com/serverless/serverless/issues/6485
+    LambdaSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security Group for streaming functions.  Egress all is set by default.
+        VpcId: ${self:custom.vpcId}
+    LamdaSourceDynamoToMskRole: # Why isn't this with the function as an iamRoleStatements?  https://github.com/serverless/serverless/issues/6485
       Type: 'AWS::IAM::Role'
       Properties:
         AssumeRolePolicyDocument:
@@ -109,6 +123,61 @@ resources:
                 - dynamodb:GetShardIterator
                 - dynamodb:ListStreams
                 Resource: ${self:custom.tableStreamArn}
+              - Effect: 'Allow'
+                Action:
+                - "ec2:CreateNetworkInterface"
+                - "ec2:DescribeNetworkInterfaces"
+                - "ec2:DetachNetworkInterface"
+                - "ec2:DeleteNetworkInterface"
+                Resource: "*"
+    LambdaElasticSearchIndexerRole: # Why isn't this with the function as an iamRoleStatements?  https://github.com/serverless/serverless/issues/6485
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+        Path: ${self:custom.iamPath}
+        PermissionsBoundary:
+          Fn::If:
+            - CreatePermissionsBoundary
+            - Fn::Join:
+              - ''
+              -
+                - 'arn:aws:iam::'
+                - Ref: AWS::AccountId
+                - ':policy'
+                - '${env:IAM_PERMISSIONS_BOUNDARY_POLICY, ""}'
+            - Ref: AWS::NoValue
+        Policies:
+          - PolicyName: 'LambdaElasticSearchIndexerRolePolicy'
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+              - Effect: 'Allow'
+                Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                - ec2:CreateNetworkInterface
+                - ec2:DeleteNetworkInterface
+                - ec2:DetachNetworkInterface
+                - ec2:DescribeNetworkInterfaces
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeSubnets
+                - ec2:DescribeVpcs
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                - kafka:DescribeCluster
+                - kafka:GetBootstrapBrokers
+                Resource: ${self:custom.clusterArn}
               - Effect: 'Allow'
                 Action:
                 - es:ESHttp*
@@ -148,13 +217,54 @@ resources:
                 Resource: 'arn:aws:logs:*:*:*'
               - Effect: 'Allow'
                 Action:
-                - dynamodb:DescribeStream
-                - dynamodb:GetRecords
-                - dynamodb:GetShardIterator
-                - dynamodb:ListStreams
-                Resource: ${self:custom.tableStreamArn}
+                - ec2:CreateNetworkInterface
+                - ec2:DeleteNetworkInterface
+                - ec2:DetachNetworkInterface
+                - ec2:DescribeNetworkInterfaces
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeSubnets
+                - ec2:DescribeVpcs
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                - kafka:DescribeCluster
+                - kafka:GetBootstrapBrokers
+                Resource: ${self:custom.clusterArn}
               - Effect: 'Allow'
                 Action:
                 - ses:SendEmail
                 - ses:SendRawEmail
                 Resource: '*'
+    IndexerEventSourceMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        BatchSize: 1
+        Enabled: true
+        EventSourceArn: ${self:custom.clusterArn}
+        FunctionName: stream-functions-${self:custom.stage}-elasticsearchIndexer
+        StartingPosition: LATEST
+        Topics:
+          - amendments
+      DependsOn: ElasticsearchIndexerLambdaFunction
+    EmailSubmitterEventSourceMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        BatchSize: 1
+        Enabled: true
+        EventSourceArn: ${self:custom.clusterArn}
+        FunctionName: stream-functions-${self:custom.stage}-emailSubmitter
+        StartingPosition: LATEST
+        Topics:
+          - amendments
+      DependsOn: EmailSubmitterLambdaFunction
+    EmailReviewerEventSourceMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        BatchSize: 1
+        Enabled: true
+        EventSourceArn: ${self:custom.clusterArn}
+        FunctionName: stream-functions-${self:custom.stage}-emailReviewer
+        StartingPosition: LATEST
+        Topics:
+          - amendments
+      DependsOn: EmailReviewerLambdaFunction
