@@ -1,0 +1,12 @@
+{
+  "name": "legacydb-connect",
+  "version": "1.0.0",
+  "description": "",
+  "dependencies": {
+    "lodash": "^4.17.20",
+    "mssql": "^6.2.3"
+  },
+  "devDependencies": {
+    "serverless-plugin-warmup": "^4.9.0"
+  }
+}

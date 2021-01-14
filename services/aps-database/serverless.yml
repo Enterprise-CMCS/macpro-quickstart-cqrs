@@ -1,0 +1,65 @@
+service: aps-database
+
+frameworkVersion: "2"
+
+plugins:
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  tableName: ${self:custom.stage}-amendments
+
+resources:
+  Resources:
+    AmendmentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tableName}
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: amendmentId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: amendmentId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST # Set the capacity to auto-scale
+    AmendmentsAtomicCounterTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tableName}-atomic-counter
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST # Set the capacity to auto-scale
+  Outputs:
+    AmendmentsTableName:
+      Value: !Ref AmendmentsTable
+    AmendmentsTableArn:
+      Value: !GetAtt AmendmentsTable.Arn
+    AmendmentsTableStreamArn:
+      Value: !GetAtt AmendmentsTable.StreamArn
+    AmendmentsAtomicCounterTableName:
+      Value: !Ref AmendmentsAtomicCounterTable
+    AmendmentsAtomicCounterTableArn:
+      Value: !GetAtt AmendmentsAtomicCounterTable.Arn
+    Region:
+      Value: !Sub ${AWS::Region}

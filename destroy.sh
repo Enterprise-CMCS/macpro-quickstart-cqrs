@@ -1,42 +1,117 @@
 #!/bin/bash
-
 set -e
 
-stage=${1:-dev}
+if [[ $1 == "" ]] ; then
+    echo 'ERROR:  You must pass a stage to destroy.  Ex. sh destroy.sh my-stage-name'
+    exit 1
+fi
+stage=$1
 
-# Clean up existing, non-empty buckets
-pushd services
-ui_bucket_name=`./output.sh ui S3BucketName $stage`
-aws s3 rm s3://$ui_bucket_name --recursive
-uploads_bucket_name=`./output.sh uploads AttachmentsBucketName $stage`
-aws s3 rm s3://$uploads_bucket_name --recursive
-popd
+# A list of names commonly used for protected/important branches/environments/stages.
+# Update as appropriate.
+protected_stage_regex="(^develop$|^master$|^main$|^val$|^impl$|^production$|^prod$|prod)"
+if [[ $stage =~ $protected_stage_regex ]] ; then
+    echo """
+      ---------------------------------------------------------------------------------------------
+      ERROR:  Please read below
+      ---------------------------------------------------------------------------------------------
+      The regex used to denote protected stages matched the stage name you passed.
+      The regex holds names commonly used for important branches/environments/stages.
+      This indicates you're trying to destroy a stage that you likely don't really want to destroy.
+      Out of caution, this script will not continue.
 
-services=(
-  'bigmac-config'
-  'bigmac'
-  'bigmac-mgmt'
-  'database'
-  'uploads'
-  'app-api'
-  'elasticsearch-auth'
-  'elasticsearch'
-  'stream-functions'
-  'ui-auth'
-  'ui'
-  # Running remove on ui-src would delete the s3 bucket and cause remove on ui to fail.
-  # We empty the bucket near the top of this file, and allow ui to delete it
-  # 'ui-src'
+      If you really do want to destroy $stage, modify this script as necessary and run again.
+
+      Be careful.
+      ---------------------------------------------------------------------------------------------
+    """
+    exit 1
+fi
+echo "\nCollecting information on stage $stage before attempting a destroy... This can take a minute or two..."
+
+ssmParamList=(
+  /kafka-cluster-config-$stage/mskConfigurationArn
+  /kafka-cluster-$stage/bootstrapBrokerStringTls
+  /kafka-cluster-$stage/clusterArn
+  /kafka-cluster-$stage/zookeeperConnectString
 )
+filteredSsmParamList=()
+set +e
+for i in "${ssmParamList[@]}"
+do
+  paramName=`aws ssm describe-parameters --filter "Key=Name,Values=$i" --query Parameters[0].Name --output text`
+  if [ "$paramName" != "None" ]; then
+    filteredSsmParamList+=($i)
+  fi
+done
+set -e
 
-deploy() {
-  service=$1
-  pushd services/$service
-  npm install
-  serverless remove --stage $stage
-  popd
-}
+# Find buckets associated with stage
+# Unfortunately, I can't get all buckets and all associaged tags in a single CLI call (that I know of)
+# So this can be pretty slow, depending on how many buckets exist in the account
+# We get all bucket names, then find associated tags for each one-by-one
+bucketList=(`aws s3api list-buckets --output text --query 'Buckets[*].Name'` )
+filteredBucketList=()
+set +e
+for i in "${bucketList[@]}"
+do
+  stage_tag=`aws s3api get-bucket-tagging --bucket $i --output text --query 'TagSet[?Key==\`STAGE\`].Value' 2>/dev/null`
+  if [ "$stage_tag" == "$stage" ]; then
+    filteredBucketList+=($i)
+  fi
+done
+set -e
 
-for (( idx=${#services[@]}-1 ; idx>=0 ; idx-- )) ; do
-    deploy ${services[idx]}
+# Find cloudformation stacks associated with stage
+filteredStackList=(`aws cloudformation describe-stacks | jq -r ".Stacks[] | select(.Tags[] | select(.Key==\"STAGE\") | select(.Value==\"$stage\")) | .StackName"`)
+
+
+echo """
+********************************************************************************
+- Check the following carefully -
+********************************************************************************
+"""
+
+echo "The following SSM Parameters will be deleted"
+printf '%s\n' "${filteredSsmParamList[@]}"
+printf '\n'
+
+echo "The following buckets will be emptied"
+printf '%s\n' "${filteredBucketList[@]}"
+
+echo "\nThe following stacks will be destroyed:"
+printf '%s\n' "${filteredStackList[@]}"
+
+echo """
+********************************************************************************
+- Scroll up and check carefully -
+********************************************************************************
+"""
+if [ "$CI" != "true" ]; then
+  read -p "Do you wish to continue?  Re-enter the stage name to continue:  " -r
+  echo
+  if [[ ! $REPLY == "$stage" ]]
+  then
+      echo "Stage name not re-entered.  Doing nothing and exiting."
+      exit 1
+  fi
+fi
+
+for i in "${filteredSsmParamList[@]}"
+do
+  echo $i
+  aws ssm delete-parameter --name "$i"
+done
+
+for i in "${filteredBucketList[@]}"
+do
+  echo $i
+  aws s3 rm s3://$i/ --recursive
+done
+
+
+for i in "${filteredStackList[@]}"
+do
+  echo $i
+  aws cloudformation delete-stack --stack-name $i
 done

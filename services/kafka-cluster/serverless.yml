@@ -1,0 +1,182 @@
+service: kafka-cluster
+
+frameworkVersion: "2"
+
+package:
+  individually: true
+
+plugins:
+  - serverless-bundle
+  - serverless-dotenv-plugin
+  - serverless-plugin-scripts
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  iamPath: ${ssm:/configuration/${self:custom.stage}/iam/path~true, ssm:/configuration/default/iam/path~true, "/"}
+  iamPermissionsBoundaryPolicy: ${ssm:/configuration/${self:custom.stage}/iam/permissionsBoundaryPolicy~true, ssm:/configuration/default/iam/permissionsBoundaryPolicy~true, ""}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  brokerInstanceType: ${ssm:/configuration/${self:custom.stage}/msk/brokerInstanceType~true, ssm:/configuration/default/msk/brokerInstanceType~true, "kafka.t3.small"}
+  ssmParameterPath: /kafka-cluster-config-${self:custom.stage}/mskConfigurationArn
+  mskConfigurationArn: ${ssm:${self:custom.ssmParameterPath}}
+  mskSsmPathPrefix: /${self:service}-${self:custom.stage}
+  vpcId: ${ssm:/configuration/${self:custom.stage}/vpc/id~true, ssm:/configuration/default/vpc/id~true}
+  privateSubnets:
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/a/id~true, ssm:/configuration/default/vpc/subnets/private/a/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/b/id~true, ssm:/configuration/default/vpc/subnets/private/b/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/c/id~true, ssm:/configuration/default/vpc/subnets/private/c/id~true}
+  scripts:
+    hooks:
+      deploy:finalize: |
+        serverless invoke --stage ${self:custom.stage} --function publishMskInfoToSsm
+
+functions:
+  publishMskInfoToSsm:
+    handler: handlers/publishMskInfoToSsm.handler
+    maximumRetryAttempts: 2
+    role: LambdaPublishMskInfoToSsmRole
+    environment:
+      mskSsmPathPrefix: ${self:custom.mskSsmPathPrefix}
+      clusterName: ${self:custom.stage}-msk
+
+resources:
+  Conditions:
+    CreatePermissionsBoundary:
+      Fn::Not:
+        - Fn::Equals:
+            - ""
+            - ${self:custom.iamPermissionsBoundaryPolicy}
+  Resources:
+    MskSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security group for the MSK Cluster.
+        VpcId: ${self:custom.vpcId}
+    MskSecurityGroupIngressBrokers:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        GroupId: !Sub "${MskSecurityGroup}"
+        IpProtocol: tcp
+        FromPort: 9094
+        ToPort: 9094
+        CidrIp: 10.0.0.0/8
+    MskSecurityGroupIngressZookeeper:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        GroupId: !Sub "${MskSecurityGroup}"
+        IpProtocol: tcp
+        FromPort: 2181
+        ToPort: 2181
+        SourceSecurityGroupId: !Sub "${MskSecurityGroup}"
+    MskClusterBrokerLogsLogGroup:
+      Type: "AWS::Logs::LogGroup"
+      Properties:
+        LogGroupName: /aws/msk/${self:service}-${self:custom.stage}-broker-logs
+    MskCluster:
+      Type: AWS::MSK::Cluster
+      Properties:
+        BrokerNodeGroupInfo:
+          StorageInfo:
+            EBSStorageInfo:
+              # This value should not be modified, as it requires replacement of the Cluster.
+              # Storage AutoScaling is enabled and built further down this file.
+              # This value is essentially the initial volume size.
+              # Leave this value as-is.
+              VolumeSize: 50
+          ClientSubnets: ${self:custom.privateSubnets}
+          InstanceType: ${self:custom.brokerInstanceType}
+          SecurityGroups:
+            - Ref: MskSecurityGroup
+        ClusterName: ${self:custom.stage}-msk
+        ConfigurationInfo:
+          Arn: ${self:custom.mskConfigurationArn}
+          Revision: 1
+        EncryptionInfo:
+          EncryptionInTransit:
+            ClientBroker: TLS
+            InCluster: true
+        EnhancedMonitoring: DEFAULT
+        KafkaVersion: "2.2.1"
+        NumberOfBrokerNodes: 3
+        LoggingInfo:
+          BrokerLogs:
+            CloudWatchLogs:
+              Enabled: true
+              LogGroup: !Sub "${MskClusterBrokerLogsLogGroup}"
+    MskStorageScalableTarget:
+      Type: AWS::ApplicationAutoScaling::ScalableTarget
+      Properties:
+        MaxCapacity: 1000
+        MinCapacity: 1
+        ResourceId: !Ref MskCluster
+        RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/kafka.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_KafkaCluster
+        ScalableDimension: kafka:broker-storage:VolumeSize
+        ServiceNamespace: kafka
+      DependsOn: MskCluster
+    MskStorageScalingPolicy:
+      Type: AWS::ApplicationAutoScaling::ScalingPolicy
+      Properties:
+        PolicyName: ${self:service}-${self:custom.stage}-storage-scaling
+        PolicyType: TargetTrackingScaling
+        ScalingTargetId: !Ref MskStorageScalableTarget
+        TargetTrackingScalingPolicyConfiguration:
+          DisableScaleIn: true
+          PredefinedMetricSpecification:
+            PredefinedMetricType: KafkaBrokerStorageUtilization
+          TargetValue: 60
+    LambdaPublishMskInfoToSsmRole: # Why isn't this with the function as an iamRoleStatements?  https://github.com/serverless/serverless/issues/6485
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "lambda.amazonaws.com"
+              Action: "sts:AssumeRole"
+        Path: ${self:custom.iamPath}
+        PermissionsBoundary:
+          Fn::If:
+            - CreatePermissionsBoundary
+            - !Sub arn:aws:iam::${AWS::AccountId}:policy${self:custom.iamPermissionsBoundaryPolicy}
+            - Ref: AWS::NoValue
+        Policies:
+          - PolicyName: LambdaRolePolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws:logs:*:*:*
+                - Effect: Allow
+                  Action:
+                    - kafka:ListClusters
+                    - kafka:GetBootstrapBrokers
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - ssm:PutParameter
+                    - ssm:GetParameter
+                  Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${self:custom.mskSsmPathPrefix}/*
+  Outputs:
+    MskClusterArn:
+      Description: The ARN of the MSK Cluster
+      Value: !Ref MskCluster
+    MskSecurityGroupId:
+      Description: |
+        The ID of the security group attached to the MSK Cluster.
+        This can be used by other resources to attach additional ingress rules.
+      Value: !Ref MskSecurityGroup

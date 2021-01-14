@@ -1,0 +1,116 @@
+service: legacydb-mssql
+
+frameworkVersion: "2"
+
+plugins:
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  iamPath: ${ssm:/configuration/${self:custom.stage}/iam/path~true, ssm:/configuration/default/iam/path~true, "/"}
+  iamPermissionsBoundaryPolicy: ${ssm:/configuration/${self:custom.stage}/iam/permissionsBoundaryPolicy~true, ssm:/configuration/default/iam/permissionsBoundaryPolicy~true, ""}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  vpcId: ${ssm:/configuration/${self:custom.stage}/vpc/id~true, ssm:/configuration/default/vpc/id~true}
+  privateSubnets:
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/a/id~true, ssm:/configuration/default/vpc/subnets/private/a/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/b/id~true, ssm:/configuration/default/vpc/subnets/private/b/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/c/id~true, ssm:/configuration/default/vpc/subnets/private/c/id~true}
+
+resources:
+  Conditions:
+    CreatePermissionsBoundary:
+      Fn::Not:
+        - Fn::Equals:
+            - ""
+            - ${self:custom.iamPermissionsBoundaryPolicy}
+  Resources:
+    SqlServerSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Allow traffic on sqlserver port
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 1433
+            ToPort: 1433
+            CidrIp: 10.0.0.0/8
+        VpcId: ${self:custom.vpcId}
+    SqlServer:
+      Type: AWS::EC2::Instance
+      Properties:
+        ImageId: ami-087a6127ba9676bb6
+        InstanceType: m5.large
+        IamInstanceProfile: !Ref Ec2InstanceProfile
+        SecurityGroupIds:
+          - Ref: SqlServerSecurityGroup
+        SubnetId: ${self:custom.privateSubnets.0}
+        EbsOptimized: true
+        Tags:
+          - Key: Name
+            Value: ${self:custom.stage}-${self:service}
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash -xe
+            exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+            export hostname="$( cut -d '.' -f 1 <<< "$HOSTNAME" )"
+            yum install -y expect
+            echo -e "
+            set timeout 120
+            spawn /opt/mssql/bin/mssql-conf set-sa-password
+            sleep 2
+            expect \":\"
+            sleep 2
+            send \"saP*ssword1\\\r\"
+            sleep 2
+            expect \":\"
+            send \"saP*ssword1\\\r\"
+            expect \"start SQL Server\"
+            " > set_password.sh
+            systemctl stop mssql-server
+            sleep 10
+            expect set_password.sh
+            /opt/mssql/bin/mssql-conf set sqlagent.enabled true
+            systemctl restart mssql-server.service
+            sleep 10
+            /opt/mssql-tools/bin/sqlcmd -t 1 -S localhost -U sa -P saP*ssword1 -Q "exec sp_dropserver 'ip-10-0-8-129'"
+            servername=ip-`/opt/mssql-tools/bin/sqlcmd -t 1 -S localhost -U sa -P saP*ssword1 -Q "select SERVERPROPERTY('ServerName')" | grep -E -o "([0-9]{1,3}[\-]){3}[0-9]{1,3}"`
+            sed "s/replace/$servername/" <<< "/opt/mssql-tools/bin/sqlcmd -t 1 -S localhost -U sa -P saP*ssword1 -Q \"exec sp_addserver 'replace', 'local'\"" > addserver.sh
+            sh addserver.sh && rm addserver.sh
+    Ec2InstanceRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - ec2.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Path: ${self:custom.iamPath}
+        PermissionsBoundary:
+          Fn::If:
+            - CreatePermissionsBoundary
+            - !Sub arn:aws:iam::${AWS::AccountId}:policy${self:custom.iamPermissionsBoundaryPolicy}
+            - Ref: AWS::NoValue
+        ManagedPolicyArns:
+          - !Sub arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+    Ec2InstanceProfile:
+      Type: AWS::IAM::InstanceProfile
+      Properties:
+        Path: ${self:custom.iamPath}
+        Roles:
+          - !Ref Ec2InstanceRole
+  Outputs:
+    MssqlIp:
+      Value: !GetAtt SqlServer.PrivateIp
