@@ -1,5 +1,5 @@
 {
-  "name": "macpro-quickstart-serverless",
+  "name": "macpro-quickstart-cqrs",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -16,7 +16,14 @@
   "author": "",
   "license": "CC0-1.0",
   "bugs": {
-    "url": "https://github.com/CMSgov/macpro-quickstart-serverless/issues"
+    "url": "https://github.com/CMSgov/macpro-quickstart-cqrs/issues"
   },
-  "homepage": "https://github.com/CMSgov/macpro-quickstart-serverless#readme"
+  "homepage": "https://github.com/CMSgov/macpro-quickstart-cqrs#readme",
+  "devDependencies": {
+    "serverless": "^2.7.0",
+    "serverless-bundle": "^3.1.0",
+    "serverless-dotenv-plugin": "^3.0.0",
+    "serverless-plugin-scripts": "^1.0.2",
+    "serverless-stack-termination-protection": "^1.0.4"
+  }
 }

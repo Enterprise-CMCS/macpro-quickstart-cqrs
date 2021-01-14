@@ -1,0 +1,46 @@
+service: aps-uploads
+
+frameworkVersion: "2"
+
+plugins:
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+
+resources:
+  Resources:
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        CorsConfiguration: # Set the CORS policy
+          CorsRules:
+            - AllowedOrigins:
+                - "*"
+              AllowedHeaders:
+                - "*"
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+  Outputs:
+    AttachmentsBucketName: # Print out the name of the bucket that is created
+      Value: !Ref AttachmentsBucket
+    AttachmentsBucketArn:
+      Value: !GetAtt AttachmentsBucket.Arn
+    Region:
+      Value: !Sub ${AWS::Region}

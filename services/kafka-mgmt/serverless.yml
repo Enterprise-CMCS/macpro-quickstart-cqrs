@@ -1,0 +1,107 @@
+service: kafka-mgmt
+
+frameworkVersion: "2"
+
+package:
+  individually: true
+
+plugins:
+  - serverless-bundle
+  - serverless-dotenv-plugin
+  - serverless-plugin-scripts
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  iamPath: ${ssm:/configuration/${self:custom.stage}/iam/path~true, ssm:/configuration/default/iam/path~true, "/"}
+  iamPermissionsBoundaryPolicy: ${ssm:/configuration/${self:custom.stage}/iam/permissionsBoundaryPolicy~true, ssm:/configuration/default/iam/permissionsBoundaryPolicy~true, ""}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  clusterArn: ${ssm:/kafka-cluster-${self:custom.stage}/clusterArn}
+  bootstrapBrokerStringTls: ${ssm:/kafka-cluster-${self:custom.stage}/bootstrapBrokerStringTls}
+  zookeeperConnectString: ${ssm:/kafka-cluster-${self:custom.stage}/zookeeperConnectString}
+  vpcId: ${ssm:/configuration/${self:custom.stage}/vpc/id~true, ssm:/configuration/default/vpc/id~true}
+  privateSubnets:
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/a/id~true, ssm:/configuration/default/vpc/subnets/private/a/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/b/id~true, ssm:/configuration/default/vpc/subnets/private/b/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/c/id~true, ssm:/configuration/default/vpc/subnets/private/c/id~true}
+  scripts:
+    hooks:
+      deploy:finalize: |
+        serverless invoke --stage ${self:custom.stage} --function createTopics
+
+functions:
+  createTopics:
+    handler: handlers/createTopics.handler
+    maximumRetryAttempts: 2
+    role: LambdaKafkaMgmtRole
+    environment:
+      clusterArn: ${self:custom.clusterArn}
+      bootstrapBrokerStringTls: ${self:custom.bootstrapBrokerStringTls}
+      zookeeperConnectString: ${self:custom.zookeeperConnectString}
+    vpc:
+      securityGroupIds:
+        - Ref: LambdaKafkaMgmtSecurityGroup
+      subnetIds: ${self:custom.privateSubnets}
+
+resources:
+  Conditions:
+    CreatePermissionsBoundary:
+      Fn::Not:
+        - Fn::Equals:
+            - ""
+            - ${self:custom.iamPermissionsBoundaryPolicy}
+  Resources:
+    LambdaKafkaMgmtSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security Group for the Lambda that manages MSK
+        VpcId: ${self:custom.vpcId}
+
+    LambdaKafkaMgmtRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "lambda.amazonaws.com"
+              Action: "sts:AssumeRole"
+        Path: ${self:custom.iamPath}
+        PermissionsBoundary:
+          Fn::If:
+            - CreatePermissionsBoundary
+            - !Sub arn:aws:iam::${AWS::AccountId}:policy${self:custom.iamPermissionsBoundaryPolicy}
+            - Ref: AWS::NoValue
+        Policies:
+          - PolicyName: "LambdaRolePolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "arn:aws:logs:*:*:*"
+                - Effect: "Allow"
+                  Action:
+                    - kafka:*
+                  Resource: "*"
+                - Effect: "Allow"
+                  Action:
+                    - "ec2:CreateNetworkInterface"
+                    - "ec2:DescribeNetworkInterfaces"
+                    - "ec2:DetachNetworkInterface"
+                    - "ec2:DeleteNetworkInterface"
+                  Resource: "*"

@@ -1,0 +1,132 @@
+service: legacydb-mgmt
+
+frameworkVersion: "2"
+
+plugins:
+  - serverless-bundle
+  - serverless-dotenv-plugin
+  - serverless-plugin-scripts
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  iamPath: ${ssm:/configuration/${self:custom.stage}/iam/path~true, ssm:/configuration/default/iam/path~true, "/"}
+  iamPermissionsBoundaryPolicy: ${ssm:/configuration/${self:custom.stage}/iam/permissionsBoundaryPolicy~true, ssm:/configuration/default/iam/permissionsBoundaryPolicy~true, ""}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  vpcId: ${ssm:/configuration/${self:custom.stage}/vpc/id~true, ssm:/configuration/default/vpc/id~true}
+  privateSubnets:
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/a/id~true, ssm:/configuration/default/vpc/subnets/private/a/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/b/id~true, ssm:/configuration/default/vpc/subnets/private/b/id~true}
+    - ${ssm:/configuration/${self:custom.stage}/vpc/subnets/private/c/id~true, ssm:/configuration/default/vpc/subnets/private/c/id~true}
+  mssqlIp: ${cf:legacydb-mssql-${self:custom.stage}.MssqlIp}
+  mssqlSsmPathPrefix: /configuration/${self:custom.stage}/legacy-mssql
+  scripts:
+    hooks:
+      deploy:finalize: |
+        serverless invoke --stage ${self:custom.stage} --function configureSqlServer
+
+functions:
+  configureSqlServer:
+    handler: handlers/configureSqlServer.handler
+    maximumRetryAttempts: 2
+    timeout: 30
+    role: LambdaLegacyMssqlMgmtRole
+    environment:
+      legacydbIp: ${self:custom.mssqlIp}
+      initialAdmin: sa
+      initialPassword: saP*ssword1
+    vpc:
+      securityGroupIds:
+        - Ref: LambdaLegacydbMgmtSecurityGroup
+      subnetIds: ${self:custom.privateSubnets}
+
+resources:
+  Conditions:
+    CreatePermissionsBoundary:
+      Fn::Not:
+        - Fn::Equals:
+            - ""
+            - ${env:IAM_PERMISSIONS_BOUNDARY_POLICY, ""}
+  Resources:
+    LambdaLegacydbMgmtSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security Group for the Lambda that manages the LegacyDB
+        VpcId: ${self:custom.vpcId}
+    LambdaLegacyMssqlMgmtRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "lambda.amazonaws.com"
+              Action: "sts:AssumeRole"
+        Path: ${self:custom.iamPath}
+        PermissionsBoundary:
+          Fn::If:
+            - CreatePermissionsBoundary
+            - Fn::Join:
+                - ""
+                - - "arn:aws:iam::"
+                  - Ref: AWS::AccountId
+                  - ":policy"
+                  - '${env:IAM_PERMISSIONS_BOUNDARY_POLICY, ""}'
+            - Ref: AWS::NoValue
+        Policies:
+          - PolicyName: "LambdaRolePolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "arn:aws:logs:*:*:*"
+                - Effect: "Allow"
+                  Action:
+                    - "ec2:CreateNetworkInterface"
+                    - "ec2:DescribeNetworkInterfaces"
+                    - "ec2:DetachNetworkInterface"
+                    - "ec2:DeleteNetworkInterface"
+                  Resource: "*"
+    LegacydbIp:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Description: The ip of the legacy sqlserver db
+        Name: ${self:custom.mssqlSsmPathPrefix}/ip
+        Type: String
+        Value: ${self:custom.mssqlIp}
+    MssqlPort:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Description: The port of the mssql server
+        Name: ${self:custom.mssqlSsmPathPrefix}/port
+        Type: String
+        Value: 1433
+    LegacydbUser:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Description: The ip of the legacy sqlserver db
+        Name: ${self:custom.mssqlSsmPathPrefix}/user
+        Type: String
+        Value: sa
+    LegacydbPassword:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Description: The ip of the legacy sqlserver db
+        Name: ${self:custom.mssqlSsmPathPrefix}/password
+        Type: String
+        Value: saP*ssword1

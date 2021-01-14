@@ -1,0 +1,159 @@
+service: aps-ui
+
+frameworkVersion: "2"
+
+plugins:
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  route53HostedZoneId: ${ssm:/configuration/${self:custom.stage}/route53/hostedZoneId~true, ssm:/configuration/default/route53/hostedZoneId~true, ""}
+  route53DomainName: ${ssm:/configuration/${self:custom.stage}/route53/domainName~true, ""}
+  cloudfrontCertificateArn: ${ssm:/configuration/${self:custom.stage}/cloudfront/certificateArn~true, ssm:/configuration/default/cloudfront/certificateArn~true, ""}
+  cloudfrontDomainName: ${ssm:/configuration/${self:custom.stage}/cloudfront/domainName~true, ""}
+
+resources:
+  Conditions:
+    CreateDnsRecord:
+      Fn::And:
+        - Fn::Not:
+            - Fn::Equals:
+                - ""
+                - ${self:custom.route53HostedZoneId}
+        - Fn::Not:
+            - Fn::Equals:
+                - ""
+                - ${self:custom.route53DomainName}
+    CreateCustomCloudFrontDomain:
+      Fn::And:
+        - Fn::Not:
+            - Fn::Equals:
+                - ""
+                - ${self:custom.cloudfrontCertificateArn}
+        - Fn::Not:
+            - Fn::Equals:
+                - ""
+                - ${self:custom.cloudfrontDomainName}
+  Resources:
+    S3Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        WebsiteConfiguration:
+          IndexDocument: index.html
+          ErrorDocument: index.html
+      DeletionPolicy: Delete
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: "s3:GetObject"
+              Resource: !Sub arn:aws:s3:::${S3Bucket}/*
+              Principal:
+                CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+        Bucket: !Ref S3Bucket
+    CloudFrontWebAcl:
+      Type: AWS::WAFv2::WebACL
+      Properties:
+        DefaultAction:
+          Block: {}
+        Rules:
+          - Action:
+              Allow: {}
+            Name: ${self:custom.stage}-allow-usa-plus-territories
+            Priority: 0
+            Statement:
+              GeoMatchStatement:
+                CountryCodes:
+                  - GU # Guam
+                  - PR # Puerto Rico
+                  - US # USA
+                  - UM # US Minor Outlying Islands
+                  - VI # US Virgin Islands
+                  - MP # Northern Mariana Islands
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: WafWebAcl
+        Scope: CLOUDFRONT
+        VisibilityConfig:
+          CloudWatchMetricsEnabled: true
+          SampledRequestsEnabled: true
+          MetricName: ${self:custom.stage}-webacl
+    CloudFrontOriginAccessIdentity:
+      Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+      Properties:
+        CloudFrontOriginAccessIdentityConfig:
+          Comment: OAI to prevent direct public access to the bucket
+    CloudFrontDistribution:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Comment: CloudFront Distro for the static website hosted in S3
+          Aliases:
+            Fn::If:
+              - CreateCustomCloudFrontDomain
+              - - ${self:custom.cloudfrontDomainName}
+              - !Ref AWS::NoValue
+          Origins:
+            - DomainName: !GetAtt S3Bucket.DomainName
+              Id: S3Origin
+              S3OriginConfig:
+                OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}
+          Enabled: true
+          HttpVersion: "http2"
+          DefaultRootObject: index.html
+          DefaultCacheBehavior:
+            AllowedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            TargetOriginId: S3Origin
+            ForwardedValues:
+              QueryString: true
+              Cookies:
+                Forward: none
+            ViewerProtocolPolicy: redirect-to-https
+          ViewerCertificate:
+            Fn::If:
+              - CreateCustomCloudFrontDomain
+              - AcmCertificateArn: ${self:custom.cloudfrontCertificateArn}
+                MinimumProtocolVersion: TLSv1
+                SslSupportMethod: sni-only
+              - CloudFrontDefaultCertificate: true
+          CustomErrorResponses:
+            - ErrorCode: 403
+              ResponseCode: 403
+              ResponsePagePath: /index.html
+          WebACLId: !GetAtt CloudFrontWebAcl.Arn
+    Route53DnsRecord:
+      Type: AWS::Route53::RecordSet
+      Condition: CreateDnsRecord
+      Properties:
+        HostedZoneId: ${self:custom.route53HostedZoneId}
+        Name: ${self:custom.route53DomainName}
+        AliasTarget:
+          DNSName: !GetAtt CloudFrontDistribution.DomainName
+          HostedZoneId: Z2FDTNDATAQYW2
+          EvaluateTargetHealth: false
+        Type: A
+  Outputs:
+    S3BucketName:
+      Value: !Ref S3Bucket
+    CloudFrontDistributionId:
+      Value: !Ref CloudFrontDistribution
+    CloudFrontEndpointUrl:
+      Value: !Sub https://${CloudFrontDistribution.DomainName}

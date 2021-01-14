@@ -1,0 +1,94 @@
+service: kafka-cluster-config
+
+frameworkVersion: "2"
+
+package:
+  individually: true
+
+plugins:
+  - serverless-bundle
+  - serverless-dotenv-plugin
+  - serverless-plugin-scripts
+  - serverless-stack-termination-protection
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  region: us-east-1
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+  iamPath: ${ssm:/configuration/${self:custom.stage}/iam/path~true, ssm:/configuration/default/iam/path~true, "/"}
+  iamPermissionsBoundaryPolicy: ${ssm:/configuration/${self:custom.stage}/iam/permissionsBoundaryPolicy~true, ssm:/configuration/default/iam/permissionsBoundaryPolicy~true, ""}
+  serverlessTerminationProtection:
+    stages:
+      - master
+      - val
+      - production
+  ssmParameterPath: /${self:service}-${self:custom.stage}/mskConfigurationArn
+  scripts:
+    hooks:
+      deploy:finalize: |
+        serverless invoke --stage ${self:custom.stage} --function createMskConfiguration
+        serverless invoke --stage ${self:custom.stage} --function createSsmParameter
+
+functions:
+  createMskConfiguration:
+    handler: handlers/createMskConfiguration.handler
+    maximumRetryAttempts: 2
+    role: LambdaManageMskConfigurationRole
+    environment:
+      mskConfigurationNamePrefix: ${self:custom.stage}-msk-config
+  createSsmParameter:
+    handler: handlers/createSsmParameter.handler
+    maximumRetryAttempts: 2
+    role: LambdaManageMskConfigurationRole
+    environment:
+      mskConfigurationNamePrefix: ${self:custom.stage}-msk-config
+      ssmParameterPath: ${self:custom.ssmParameterPath}
+
+resources:
+  Conditions:
+    CreatePermissionsBoundary:
+      Fn::Not:
+        - Fn::Equals:
+            - ""
+            - ${self:custom.iamPermissionsBoundaryPolicy}
+  Resources:
+    LambdaManageMskConfigurationRole: # Why isn't this with the function as an iamRoleStatements?  https://github.com/serverless/serverless/issues/6485
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "lambda.amazonaws.com"
+              Action: "sts:AssumeRole"
+        Path: ${self:custom.iamPath}
+        PermissionsBoundary:
+          Fn::If:
+            - CreatePermissionsBoundary
+            - !Sub arn:aws:iam::${AWS::AccountId}:policy${self:custom.iamPermissionsBoundaryPolicy}
+            - Ref: AWS::NoValue
+        Policies:
+          - PolicyName: LambdaRolePolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws:logs:*:*:*
+                - Effect: Allow
+                  Action:
+                    - kafka:ListConfigurations
+                    - kafka:CreateConfiguration
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - ssm:PutParameter
+                  Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${self:custom.ssmParameterPath}
